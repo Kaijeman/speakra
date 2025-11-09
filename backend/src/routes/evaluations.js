@@ -1,31 +1,30 @@
 import { Router } from 'express'
 import upload from '../middleware/upload.js'
-import pool from '../config/db.js'
 import axios from 'axios'
 import fs from 'fs'
 import FormData from 'form-data'
+import { supabaseAuthRequired } from '../middleware/authSupabase.js'
+import { supabaseAdmin } from '../lib/supabaseClient.js'
 
 const router = Router()
 
 // POST /api/evaluations
-// Body: form-data (fields: user_id optional, file: audio)
-router.post('/', upload.single('audio'), async (req, res) => {
+router.post('/', supabaseAuthRequired, upload.single('audio'), async (req, res) => {
   const file = req.file
-  const { user_id } = req.body
+  const user = req.user
 
   if (!file) {
     return res.status(400).json({ error: 'File audio wajib diupload' })
   }
 
   try {
-    // Siapkan form-data untuk dikirim ke AI service
+    // Kirim ke AI service
     const formData = new FormData()
     formData.append('file', fs.createReadStream(file.path), {
       filename: file.filename,
       contentType: file.mimetype
     })
 
-    // Panggil AI service
     const aiResponse = await axios.post(
       `${process.env.AI_SERVICE_URL}/analyze`,
       formData,
@@ -37,31 +36,34 @@ router.post('/', upload.single('audio'), async (req, res) => {
 
     const result = aiResponse.data
 
-    // Simpan ke database
-    const [insert] = await pool.query(
-      `INSERT INTO evaluations 
-        (user_id, audio_path, score, fluency, clarity, confidence, feedback)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        user_id || null,
-        file.filename,
-        result.score || null,
-        result.fluency || null,
-        result.clarity || null,
-        result.confidence || null,
-        result.feedback || null
-      ]
-    )
+    // Simpan ke Supabase evaluations
+    const { data, error } = await supabaseAdmin
+      .from('evaluations')
+      .insert({
+        user_id: user.id,
+        audio_path: file.filename,
+        score: result.score ?? null,
+        fluency: result.fluency ?? null,
+        clarity: result.clarity ?? null,
+        confidence: result.confidence ?? null,
+        feedback: result.feedback ?? null
+      })
+      .select('id')
+      .single()
+
+    if (error) {
+      console.error('Supabase insert error:', error)
+      return res.status(500).json({ error: 'Gagal menyimpan hasil ke database' })
+    }
 
     return res.json({
       message: 'Analisis berhasil',
-      evaluation_id: insert.insertId,
+      evaluation_id: data.id,
       audio_file: file.filename,
       analysis: result
     })
   } catch (err) {
     console.error('Error saat memproses analisis:', err.message)
-
     return res.status(500).json({
       error: 'Gagal menganalisis audio',
       detail: err.response?.data || err.message
@@ -69,28 +71,45 @@ router.post('/', upload.single('audio'), async (req, res) => {
   }
 })
 
-// GET /api/evaluations/:id
-// Ambil detail hasil analisis
-router.get('/:id', async (req, res) => {
+// GET /api/evaluations (riwayat user login)
+router.get('/', supabaseAuthRequired, async (req, res) => {
+  const user = req.user
+
+  const { data, error } = await supabaseAdmin
+    .from('evaluations')
+    .select('id, score, fluency, clarity, confidence, feedback, audio_path, created_at')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    console.error('Supabase select error:', error)
+    return res.status(500).json({ error: 'Gagal mengambil data' })
+  }
+
+  return res.json(data)
+})
+
+// GET /api/evaluations/:id (detail milik user)
+router.get('/:id', supabaseAuthRequired, async (req, res) => {
+  const user = req.user
   const { id } = req.params
 
-  try {
-    const [rows] = await pool.query(
-      `SELECT e.*, u.name AS user_name, u.email AS user_email
-       FROM evaluations e
-       LEFT JOIN users u ON e.user_id = u.id
-       WHERE e.id = ?`,
-      [id]
-    )
+  const { data, error } = await supabaseAdmin
+    .from('evaluations')
+    .select('*')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single()
 
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Data tidak ditemukan' })
-    }
-
-    return res.json(rows[0])
-  } catch (err) {
-    return res.status(500).json({ error: err.message })
+  if (error && error.code === 'PGRST116') {
+    return res.status(404).json({ error: 'Data tidak ditemukan' })
   }
+  if (error) {
+    console.error('Supabase select error:', error)
+    return res.status(500).json({ error: 'Gagal mengambil data' })
+  }
+
+  return res.json(data)
 })
 
 export default router
