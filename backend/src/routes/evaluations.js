@@ -1,115 +1,91 @@
-import { Router } from 'express'
-import upload from '../middleware/upload.js'
+import express from 'express'
+import multer from 'multer'
 import axios from 'axios'
-import fs from 'fs'
 import FormData from 'form-data'
+import { fileURLToPath } from 'url'
+import { join, extname } from 'path'
+import fs from 'fs/promises'
+import ffmpeg from 'fluent-ffmpeg'
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 import { supabaseAuthRequired } from '../middleware/authSupabase.js'
-import { supabaseAdmin } from '../lib/supabaseClient.js'
 
-const router = Router()
+ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
-// POST /api/evaluations
-router.post('/', supabaseAuthRequired, upload.single('audio'), async (req, res) => {
-  const file = req.file
-  const user = req.user
+const router = express.Router()
 
-  if (!file) {
-    return res.status(400).json({ error: 'File audio wajib diupload' })
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype?.startsWith('audio/')) cb(null, true)
+    else cb(new Error('Tipe file tidak didukung'))
   }
+})
 
-  try {
-    // Kirim ke AI service
-    const formData = new FormData()
-    formData.append('file', fs.createReadStream(file.path), {
-      filename: file.filename,
-      contentType: file.mimetype
-    })
+async function bufferToTempFile(buffer, ext = '.bin') {
+  const { file } = await import('tmp-promise')
+  const tmp = await file({ postfix: ext })
+  await fs.writeFile(tmp.path, buffer)
+  return { path: tmp.path, cleanup: tmp.cleanup }
+}
 
-    const aiResponse = await axios.post(
-      `${process.env.AI_SERVICE_URL}/analyze`,
-      formData,
-      {
-        headers: formData.getHeaders(),
-        timeout: 60000
+async function convertToWav(buffer, mime) {
+  const inExt = mime?.includes('webm') ? '.webm'
+             : mime?.includes('ogg')  ? '.ogg'
+             : mime?.includes('mpeg') ? '.mp3'
+             : mime?.includes('wav')  ? '.wav'
+             : '.bin'
+
+  const { path: inPath, cleanup: cleanIn } = await bufferToTempFile(buffer, inExt)
+  const { file } = await import('tmp-promise')
+  const outTmp = await file({ postfix: '.wav' })
+
+  await new Promise((resolve, reject) => {
+    ffmpeg(inPath)
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .audioCodec('pcm_s16le')
+      .format('wav')
+      .on('error', reject)
+      .on('end', resolve)
+      .save(outTmp.path)
+  })
+
+  const outBuf = await fs.readFile(outTmp.path)
+  await fs.unlink(outTmp.path).catch(() => {})
+  await cleanIn().catch(() => {})
+  return outBuf
+}
+
+router.post('/evaluations', supabaseAuthRequired, upload.single('audio'), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'File audio tidak ditemukan' })
       }
-    )
 
-    const result = aiResponse.data
+      const { originalname, mimetype, size, buffer } = req.file
+      console.log('[UPLOAD]', { originalname, mimetype, size })
 
-    // Simpan ke Supabase evaluations
-    const { data, error } = await supabaseAdmin
-      .from('evaluations')
-      .insert({
-        user_id: user.id,
-        audio_path: file.filename,
-        score: result.score ?? null,
-        fluency: result.fluency ?? null,
-        clarity: result.clarity ?? null,
-        confidence: result.confidence ?? null,
-        feedback: result.feedback ?? null
+      const wavBuffer = await convertToWav(buffer, mimetype)
+
+      const form = new FormData()
+      form.append('file', wavBuffer, { filename: 'upload.wav', contentType: 'audio/wav' })
+
+      const aiBase = process.env.AI_BASE_URL || 'http://localhost:8000'
+      const aiResp = await axios.post(`${aiBase}/analyze`, form, {
+        headers: form.getHeaders(),
+        timeout: 60_000
       })
-      .select('id')
-      .single()
 
-    if (error) {
-      console.error('Supabase insert error:', error)
-      return res.status(500).json({ error: 'Gagal menyimpan hasil ke database' })
+      return res.json(aiResp.data)
+    } catch (err) {
+      console.error('[EVALUATIONS_ERROR]', err?.response?.data || err.message)
+      return res.status(500).json({
+        error: 'Gagal menganalisis audio',
+        detail: err?.response?.data || err.message
+      })
     }
-
-    return res.json({
-      message: 'Analisis berhasil',
-      evaluation_id: data.id,
-      audio_file: file.filename,
-      analysis: result
-    })
-  } catch (err) {
-    console.error('Error saat memproses analisis:', err.message)
-    return res.status(500).json({
-      error: 'Gagal menganalisis audio',
-      detail: err.response?.data || err.message
-    })
   }
-})
-
-// GET /api/evaluations (riwayat user login)
-router.get('/', supabaseAuthRequired, async (req, res) => {
-  const user = req.user
-
-  const { data, error } = await supabaseAdmin
-    .from('evaluations')
-    .select('id, score, fluency, clarity, confidence, feedback, audio_path, created_at')
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-
-  if (error) {
-    console.error('Supabase select error:', error)
-    return res.status(500).json({ error: 'Gagal mengambil data' })
-  }
-
-  return res.json(data)
-})
-
-// GET /api/evaluations/:id (detail milik user)
-router.get('/:id', supabaseAuthRequired, async (req, res) => {
-  const user = req.user
-  const { id } = req.params
-
-  const { data, error } = await supabaseAdmin
-    .from('evaluations')
-    .select('*')
-    .eq('id', id)
-    .eq('user_id', user.id)
-    .single()
-
-  if (error && error.code === 'PGRST116') {
-    return res.status(404).json({ error: 'Data tidak ditemukan' })
-  }
-  if (error) {
-    console.error('Supabase select error:', error)
-    return res.status(500).json({ error: 'Gagal mengambil data' })
-  }
-
-  return res.json(data)
-})
+)
 
 export default router

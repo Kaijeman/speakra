@@ -1,30 +1,25 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
 
 app = FastAPI()
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"ok": True}
 
 @app.post("/analyze")
-async def analyze_audio(file: UploadFile = File(...)):
-    # Di sini nanti kamu implementasi:
-    # - ekstraksi fitur suara
-    # - model untuk menilai kualitas public speaking berbahasa Indonesia
-    # Untuk saat ini dummy saja
-
-    # Contoh dummy scoring khusus Speakra:
-    result = {
-        "score": 80.0,
-        "fluency": 0.78,
-        "clarity": 0.82,
-        "confidence": 0.75,
-        "feedback": (
-            "Penyampaian sudah cukup jelas. "
-            "Perbaiki tempo bicara, kurangi pengulangan kata, "
-            "dan kuatkan artikulasi pada beberapa kata kunci."
-        )
+async def analyze(file: UploadFile = File(...)):
+    size = 0
+    chunk = await file.read()
+    size = len(chunk)
+    if size == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+    
+    return {
+        "analysis": {
+            "score": 78.5,
+            "fluency": 0.74,
+            "clarity": 0.81,
+            "speed": 0.92,
+            "feedback": "Penyampaian sudah cukup jelas. Perbaiki tempo bicara, kurangi pengulangan kata, dan kuatkan artikulasi pada beberapa kata kunci."
+        }
     }
-
-    return JSONResponse(content=result)
