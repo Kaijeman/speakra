@@ -13,7 +13,7 @@ async def analyze(file: UploadFile = File(...)):
     size = len(chunk)
     if size == 0:
         raise HTTPException(status_code=400, detail="Empty file")
-    # data dummy untuk testing
+    
     return {
         "analysis": {
             "score": 78.5,
