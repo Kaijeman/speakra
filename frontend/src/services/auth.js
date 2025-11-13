@@ -6,7 +6,6 @@ export async function registerWithEmail(name, email, password) {
     password,
     options: {
       data: { name },
-      emailRedirectTo: `${window.location.origin}/confirm`,
     },
   })
   if (error) throw error

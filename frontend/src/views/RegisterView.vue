@@ -51,9 +51,7 @@
 
         <p v-if="error" class="mt-3 text-sm text-red-500">{{ error }}</p>
 
-        <div v-if="waiting" class="mt-4 p-3 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200">
-          Menunggu verifikasi email.
-        </div>
+        <p v-if="successMessage" class="text-sm text-emerald-600">{{ successMessage }}</p>
 
         <p class="mt-4 text-sm text-slate-600">
           Sudah punya akun?
