@@ -2,12 +2,11 @@ import express from 'express'
 import multer from 'multer'
 import axios from 'axios'
 import FormData from 'form-data'
-import { fileURLToPath } from 'url'
-import { join, extname } from 'path'
 import fs from 'fs/promises'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
 import { supabaseAuthRequired } from '../middleware/authSupabase.js'
+import { supabaseAdmin } from '../lib/supabaseClient.js'
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
 
@@ -76,6 +75,38 @@ router.post('/evaluations', supabaseAuthRequired, upload.single('audio'), async 
         headers: form.getHeaders(),
         timeout: 60_000
       })
+
+      const analysis = aiResp.data?.analysis || {}
+      try {
+        const userId = req.user?.id
+        if (!userId) {
+          console.error('[SUPABASE_INSERT_ERROR] userId kosong')
+        } else {
+          const audioPath = req.file?.originalname || 'recording'
+
+          const { data: inserted, error: insertError } = await supabaseAdmin
+            .from('evaluations')
+            .insert({
+              user_id: userId,
+              audio_path: audioPath,
+              score: analysis.score ?? null,
+              fluency: analysis.fluency ?? null,
+              clarity: analysis.clarity ?? null,
+              speed: analysis.speed ?? null,
+              feedback: analysis.feedback ?? null,
+            })
+            .select()
+            .single()
+
+          if (insertError) {
+            console.error('[SUPABASE_INSERT_ERROR]', insertError)
+          } else {
+            console.log('[SUPABASE_INSERT_OK]', inserted.id)
+          }
+        }
+      } catch (e) {
+        console.error('[SUPABASE_INSERT_EXCEPTION]', e)
+      }
 
       return res.json(aiResp.data)
     } catch (err) {
