@@ -79,22 +79,40 @@ router.post('/evaluations', supabaseAuthRequired, upload.single('audio'), async 
 
     const prompt = `
 Kamu adalah sistem penilai kualitas public speaking berbahasa Indonesia.
-Diberikan sebuah rekaman suara, berikan penilaian dengan format JSON persis seperti ini:
+
+Tugasmu:
+1. TRANSKRIPSI singkat isi pidato dari audio.
+2. NILAI kualitas public speaking berdasarkan:
+   - kelancaran (fluency)
+   - kejelasan pelafalan (clarity)
+   - kecepatan bicara (speed)
+   - kualitas isi dan struktur (content)
+
+PENTING:
+- Jika audio hanya berisi kata-kata pendek yang berulang (misalnya "tes tes tes" atau yang serupa) 
+  atau tidak membentuk kalimat yang jelas, beri nilai RENDAH (overall_score maksimal 30).
+- Jika durasi sangat singkat (< 10 detik) atau jumlah kata sangat sedikit (< 10 kata),
+  anggap sebagai percobaan mikrofon dan beri nilai RENDAH.
+- Semakin terstruktur, runtut, dan relevan isi pidatonya, semakin tinggi nilainya.
+- Semakin sering jeda "eee", "emm", pengulangan tidak perlu, atau pelafalan kurang jelas,
+  turunkan nilai fluency dan clarity.
+
+KIRIMKAN HASIL DALAM BENTUK JSON MURNI (TANPA blok kode, TANPA tanda \`\`\`), dengan format:
 
 {
-"score": number, // 0 - 100
-"fluency": number, // 0 - 1
-"clarity": number, // 0 - 1
-"speed": number, // 0 - 1 (kecepatan bicara, 0 terlalu lambat, 1 terlalu cepat, sekitar 0.5 - 0.7 ideal)
-"feedback": string // ringkasan umpan balik singkat dalam bahasa Indonesia
+  "transcript": string, // ringkasan transkripsi bahasa Indonesia
+  "overall_score": number, // 0 - 100
+  "fluency": number, // 0 - 1
+  "clarity": number, // 0 - 1
+  "speed": number, // 0 - 1
+  "content_score": number, // 0 - 1, kualitas isi & struktur
+  "estimated_duration": number, // perkiraan durasi dalam detik
+  "word_count": number, // jumlah kata kira-kira
+  "is_valid_speech": boolean, // false jika hanya tes mic / kata acak / sangat pendek
+  "feedback": string // feedback singkat dalam bahasa Indonesia
 }
 
-Kriteria umum:
-- Fluency: kelancaran, minim jeda "eee", "mmm", tidak banyak tersendat.
-- Clarity: kejelasan pelafalan, kemudahan dipahami.
-- Speed: kecepatan bicara, jangan terlalu lambat atau terlalu cepat.
-- Score: nilai keseluruhan 0-100 berdasarkan kombinasi aspek di atas.
-Jangan tambahkan teks lain di luar JSON.
+Hanya kirim JSON valid, tanpa teks lain sebelum atau sesudahnya.
     `.trim()
 
     const result = await model.generateContent({
@@ -126,14 +144,34 @@ Jangan tambahkan teks lain di luar JSON.
     }
 
     const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0))
-    const clampScore = (v) => Math.max(0, Math.min(100, Number(v) || 0))
+    const clampScore100 = (v) => Math.max(0, Math.min(100, Number(v) || 0))
+
+    const isValidSpeech = analysis.is_valid_speech !== false
+    const wordCount = Number(analysis.word_count || 0)
+    const duration = Number(analysis.estimated_duration || 0)
+    const contentScore = clamp01(analysis.content_score)
+
+    let score = clampScore100(analysis.overall_score)
+    let fluency = clamp01(analysis.fluency)
+    let clarity = clamp01(analysis.clarity)
+    let speed = clamp01(analysis.speed)
+    let feedback = analysis.feedback || 'Tidak ada umpan balik.'
+
+    let penaltyReason = ''
+
+    if (!isValidSpeech || wordCount < 10 || duration < 10 || contentScore < 0.3) {
+      score = 0
+      fluency = 0
+      clarity = 0
+      speed = 0
+    }
 
     analysis = {
-      score: clampScore(analysis.score),
-      fluency: clamp01(analysis.fluency),
-      clarity: clamp01(analysis.clarity),
-      speed: clamp01(analysis.speed),
-      feedback: analysis.feedback || 'Tidak ada umpan balik.',
+      score,
+      fluency,
+      clarity,
+      speed,
+      feedback,
     }
 
     try {
