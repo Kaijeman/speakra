@@ -2,7 +2,7 @@
   <div class="leading-tight select-none">
     <div
       :class="[
-        'font-extrabold tracking-tight bg-gradient-to-r from-blue-600 to-violet-600 bg-clip-text text-transparent',
+        'font-extrabold tracking-tight bg-linear-to-r from-blue-600 to-violet-600 bg-clip-text text-transparent',
         sizeClass
       ]"
     >

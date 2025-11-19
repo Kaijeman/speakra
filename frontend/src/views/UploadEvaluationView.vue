@@ -9,17 +9,45 @@
           <div class="hidden sm:block text-sm text-slate-600">
             {{ userName || 'User' }}
           </div>
-          <div class="h-9 w-9 rounded-full bg-gradient-to-br from-blue-600 to-violet-600 grid place-items-center text-white text-xs font-semibold">
+          <div class="h-9 w-9 rounded-full bg-linear-to-br from-blue-600 to-violet-600 grid place-items-center text-white text-xs font-semibold">
             {{ userInitials }}
           </div>
+          <button
+            type="button"
+            @click="handleLogout"
+            class="text-xs sm:text-sm px-3 py-1.5 rounded-full border border-slate-300 text-slate-600 hover:bg-slate-50 transition"
+          >
+            Keluar
+          </button>
         </div>
       </div>
     </header>
 
     <main class="grow mx-auto max-w-6xl px-4 py-6 w-full">
-      <div class="card p-6">
+      <div class="flex justify-center mb-4">
+        <div class="segmented w-full max-w-md">
+          <button
+            class="segmented-btn"
+            :data-active="mainTab==='analysis'"
+            @click="mainTab='analysis'"
+          >
+            Analisis
+          </button>
+          <button
+            class="segmented-btn"
+            :data-active="mainTab==='history'"
+            @click="mainTab='history'"
+          >
+            Riwayat
+          </button>
+        </div>
+      </div>
+
+      <div v-show="mainTab==='analysis'" class="card p-6">
         <h2 class="text-lg font-semibold">Rekam atau Upload Public Speaking Anda</h2>
-        <p class="text-sm text-slate-500">Pilih untuk merekam langsung atau upload file audio yang sudah ada</p>
+        <p class="text-sm text-slate-500">
+          Pilih untuk merekam langsung atau upload file audio yang sudah ada
+        </p>
 
         <div class="flex justify-center">
           <div class="segmented w-full max-w-xl mt-6 mb-6">
@@ -140,6 +168,70 @@
           </div>
         </div>
       </div>
+
+      <div v-show="mainTab==='history'" class="card p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-semibold">Riwayat Analisis</h2>
+            <p class="text-sm text-slate-500">
+              Lihat kembali hasil analisis public speaking yang pernah Anda lakukan.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="btn-soft text-xs"
+            @click="reloadHistory"
+            :disabled="isLoadingHistory"
+          >
+            Muat ulang
+          </button>
+        </div>
+
+        <div v-if="isLoadingHistory" class="py-8 text-center text-sm text-slate-500">
+          Memuat riwayat...
+        </div>
+        <p v-else-if="historyError" class="text-sm text-red-500">
+          {{ historyError }}
+        </p>
+        <div v-else-if="historyItems.length === 0" class="py-8 text-center text-sm text-slate-500">
+          Belum ada analisis yang tersimpan.
+        </div>
+        <div v-else class="space-y-3">
+          <div
+            v-for="item in historyItems"
+            :key="item.id"
+            class="rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:p-4 flex flex-col gap-2"
+          >
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <div class="text-sm font-semibold">
+                  Skor {{ formatNumber(item.score) }}
+                </div>
+                <div class="text-xs text-slate-500">
+                  {{ formatDateTime(item.created_at) }} • {{ item.audio_path || 'Tanpa nama' }}
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2 text-xs">
+                <span class="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 bg-white">
+                  <span>Kefasihan</span>
+                  <span class="font-semibold">{{ toPercent(item.fluency) }}</span>
+                </span>
+                <span class="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 bg-white">
+                  <span>Kejelasan</span>
+                  <span class="font-semibold">{{ toPercent(item.clarity) }}</span>
+                </span>
+                <span class="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 bg-white">
+                  <span>Kecepatan</span>
+                  <span class="font-semibold">{{ toPercent(item.speed) }}</span>
+                </span>
+              </div>
+            </div>
+            <p v-if="item.feedback" class="text-xs text-slate-600">
+              {{ item.feedback }}
+            </p>
+          </div>
+        </div>
+      </div>
     </main>
 
     <footer class="border-t border-slate-200 bg-white/60 backdrop-blur">
@@ -153,6 +245,7 @@
 <script>
 import api from '../services/api'
 import { supabase } from '../lib/supabaseClient'
+import { logout as logoutService } from '../services/auth'
 import Wordmark from '../components/Wordmark.vue';
 
 export default {
@@ -160,7 +253,9 @@ export default {
   components: { Wordmark },
   data() {
     return {
+      mainTab: 'analysis',
       activeTab: 'record',
+
       selectedFile: null,
       isRecording: false,
       recBusy: false,
@@ -176,6 +271,11 @@ export default {
       result: null,
       userName: '',
       year: new Date().getFullYear(),
+
+      historyItems: [],
+      isLoadingHistory: false,
+      historyError: '',
+      historyLoaded: false,
     }
   },
   computed: {
@@ -184,11 +284,26 @@ export default {
       return n.split(' ').slice(0, 2).map(s => s[0]?.toUpperCase()).join('') || 'U'
     }
   },
+  watch: {
+    mainTab(newVal) {
+      if (newVal === 'history' && !this.historyLoaded) {
+        this.loadHistory()
+      }
+    }
+  },
   async mounted() {
     const { data } = await supabase.auth.getUser()
     this.userName = data?.user?.user_metadata?.name || 'User'
   },
   methods: {
+    async handleLogout() {
+      try {
+        await logoutService()
+        this.$router.push('/login')
+      } catch (e) {
+        console.error('Gagal logout:', e)
+      }
+    },
     async startRecording() {
       this.recError = ''
       this.resetRecording()
@@ -217,13 +332,13 @@ export default {
       }
     },
     stopRecording() {
-    if (this.mediaRecorder && this.isRecording) {
+      if (this.mediaRecorder && this.isRecording) {
         try { this.mediaRecorder.requestData?.() } catch {}
         this.mediaRecorder.stop()
         this.mediaRecorder.stream.getTracks().forEach(t => t.stop())
         this.isRecording = false
         clearInterval(this.timerId); this.timerId = null
-    }
+      }
     },
     resetRecording() {
       if (this.mediaRecorder && this.isRecording) this.stopRecording()
@@ -303,6 +418,41 @@ export default {
 
     toPercent(v) { if (v == null) return '-'; return `${Math.round(v * 100)}%` },
     formatNumber(v) { if (v == null) return '-'; return Number(v).toFixed(1) },
+
+    async loadHistory() {
+      this.isLoadingHistory = true
+      this.historyError = ''
+      try {
+        const res = await api.get('/evaluations', {
+          params: { page: 1, limit: 10 },
+        })
+        this.historyItems = res.data?.items || []
+        this.historyLoaded = true
+      } catch (err) {
+        this.historyError =
+          err.response?.data?.error ||
+          err.response?.data?.detail ||
+          err.message ||
+          'Gagal memuat riwayat'
+      } finally {
+        this.isLoadingHistory = false
+      }
+    },
+    async reloadHistory() {
+      this.historyLoaded = false
+      await this.loadHistory()
+    },
+    formatDateTime(iso) {
+      if (!iso) return '-'
+      const d = new Date(iso)
+      return d.toLocaleString('id-ID', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    },
   },
   beforeUnmount() {
     if (this.timerId) clearInterval(this.timerId)
